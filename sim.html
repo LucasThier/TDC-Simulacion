@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Simulación Control de Velocidad - Escalera Mecánica</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        h1 {
+            margin-bottom: 5px;
+        }
+
+        section {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin: 4px 0;
+        }
+
+        canvas {
+            border: 1px solid #ccc;
+            background: #fff;
+            display: block;
+        }
+
+        #estadoSim {
+            padding: 8px;
+            border-radius: 4px;
+            background: #eee;
+            margin-bottom: 15px;
+        }
+
+        .fila-charts {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .fila-charts>div {
+            flex: 1 1 260px;
+        }
+
+        button {
+            margin-right: 6px;
+            margin-top: 4px;
+        }
+
+        /* Layout en dos columnas: izquierda (inputs), derecha (gráficos) */
+        .layout {
+            display: flex;
+            align-items: flex-start;
+            gap: 20px;
+        }
+
+        .col-left,
+        .col-right {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .col-right {
+            flex: 1.1;
+        }
+
+        /* El gráfico grande puede adaptarse al ancho de la columna,
+           pero mantiene su resolución interna (800x250) */
+        #velCanvas {
+            width: 100%;
+            max-width: 800px;
+            height: auto;
+        }
+
+        @media (max-width: 900px) {
+            .layout {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Simulación PID - Control de Velocidad</h1>
+    <p id="estadoSim">Simulación detenida</p>
+
+    <div class="layout">
+        <!-- COLUMNA IZQUIERDA -->
+        <div class="col-left">
+            <section>
+                <h2>Parámetros de la simulación</h2>
+                <label>
+                    Setpoint velocidad [RPM]:
+                    <input id="inputSetpoint" type="number" value="1600">
+                </label>
+                <label>
+                    Velocidad inicial [RPM]:
+                    <input id="inputVelInicial" type="number" value="1600">
+                </label>
+                <label>
+                    Banda de error ± [RPM]:
+                    <input id="inputBanda" type="number" value="200">
+                </label>
+            </section>
+
+            <section>
+                <h2>Ganancias PID</h2>
+                <label>
+                    KP:
+                    <input id="kpInput" type="number" step="0.01" value="0.10">
+                </label>
+                <label>
+                    KI:
+                    <input id="kiInput" type="number" step="0.01" value="0.50">
+                </label>
+                <label>
+                    KD:
+                    <input id="kdInput" type="number" step="0.01" value="0.05">
+                </label>
+                <small>Podés cambiarlos incluso con la simulación en marcha.</small>
+            </section>
+
+            <section>
+                <h2>Controles</h2>
+                <button id="btnIniciar">Iniciar</button>
+                <button id="btnPausar">Pausar</button>
+                <button id="btnReiniciar">Reiniciar</button>
+                <br>
+                <label>
+                    Perturbación [RPM]:
+                    <input id="inputPerturbacion" type="number" value="50">
+                </label>
+                <button id="btnPerturbacion">Aplicar perturbación una vez</button>
+            </section>
+
+            <section>
+                <h2>Valores instantáneos</h2>
+                <ul>
+                    <li>Velocidad actual: <strong><span id="valVelActual">0</span></strong> RPM</li>
+                    <li>Error: <strong><span id="valError">0</span></strong> RPM</li>
+                    <li>Señal de control: <strong><span id="valControl">0</span></strong> V</li>
+                    <li>Señal actuador: <strong><span id="valActuador">60</span></strong> Hz</li>
+                </ul>
+            </section>
+        </div>
+
+        <!-- COLUMNA DERECHA: gráficos -->
+        <div class="col-right">
+            <section>
+                <h2>Velocidad del motor y banda de error</h2>
+                <canvas id="velCanvas" width="800" height="250"></canvas>
+            </section>
+
+            <section>
+                <h2>Señales internas</h2>
+                <div class="fila-charts">
+                    <div>
+                        <h3>e(t): señalError [RPM]</h3>
+                        <canvas id="errorCanvas" width="260" height="140"></canvas>
+                    </div>
+                    <div>
+                        <h3>señalControlFinal [V]</h3>
+                        <canvas id="controlCanvas" width="260" height="140"></canvas>
+                    </div>
+                    <div>
+                        <h3>señalActuador [Hz]</h3>
+                        <canvas id="actuadorCanvas" width="260" height="140"></canvas>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script>
+        // ===== Parámetros base =====
+        let setpointVelocidadRPM = 1600;
+        let velInicialRPM = 1600;
+        let bandaDeErrorRPM = 200;
+
+        let tiempo = Date.now();
+        let tiempoSimSeg = 0;
+
+        let señalError = 0;
+
+        // Valores por defecto (también están en los inputs)
+        let KP = 0.1;
+        let KI = 0.5;
+        let KD = 0.05;
+
+        let velActualRPM = velInicialRPM;
+        const velCambioRpm = 10;
+
+        let perturbacionMagnitudRPM = 50;
+        let debeAplicarPerturbacion = false;
+
+        let señalControlFinal = 0;
+        let señalActuador = 60;
+
+        let timerId = null;
+        let ejecutando = false;
+        let fallo = false;
+
+        const datos = [];         // historial de muestras
+        const MAX_DATOS = 300;    // máximo de puntos a guardar
+
+        // ===== Utilidades de parámetros / UI =====
+        function leerInputsParametros() {
+            const spInput = document.getElementById("inputSetpoint");
+            const viInput = document.getElementById("inputVelInicial");
+            const bandaInput = document.getElementById("inputBanda");
+
+            let sp = parseFloat(spInput.value);
+            if (!isFinite(sp)) sp = 1600;
+            let vi = parseFloat(viInput.value);
+            if (!isFinite(vi)) vi = sp;
+            let banda = parseFloat(bandaInput.value);
+            if (!isFinite(banda)) banda = 200;
+
+            setpointVelocidadRPM = sp;
+            velInicialRPM = vi;
+            bandaDeErrorRPM = Math.abs(banda);
+
+            spInput.value = setpointVelocidadRPM;
+            viInput.value = velInicialRPM;
+            bandaInput.value = bandaDeErrorRPM;
+        }
+
+        function leerGananciasPID() {
+            const kpEl = document.getElementById("kpInput");
+            const kiEl = document.getElementById("kiInput");
+            const kdEl = document.getElementById("kdInput");
+
+            let kpVal = parseFloat(kpEl.value);
+            let kiVal = parseFloat(kiEl.value);
+            let kdVal = parseFloat(kdEl.value);
+
+            if (!isFinite(kpVal)) kpVal = KP;
+            if (!isFinite(kiVal)) kiVal = KI;
+            if (!isFinite(kdVal)) kdVal = KD;
+
+            KP = kpVal;
+            KI = kiVal;
+            KD = kdVal;
+
+            return { KP, KI, KD };
+        }
+
+        function actualizarIndicadores() {
+            document.getElementById("valVelActual").textContent = velActualRPM.toFixed(2);
+            document.getElementById("valError").textContent = señalError.toFixed(2);
+            document.getElementById("valControl").textContent = señalControlFinal.toFixed(2);
+            document.getElementById("valActuador").textContent = señalActuador.toFixed(2);
+        }
+
+        function actualizarEstadoTexto() {
+            const estado = document.getElementById("estadoSim");
+            if (fallo) {
+                estado.textContent = "FALLA: velocidad fuera de la banda de error";
+                estado.style.color = "red";
+                estado.style.fontWeight = "bold";
+            } else if (ejecutando) {
+                estado.textContent = "Simulación en ejecución";
+                estado.style.color = "green";
+                estado.style.fontWeight = "normal";
+            } else {
+                estado.textContent = "Simulación detenida";
+                estado.style.color = "black";
+                estado.style.fontWeight = "normal";
+            }
+        }
+
+        function marcarFalla() {
+            fallo = true;
+            if (timerId !== null) {
+                clearInterval(timerId);
+                timerId = null;
+            }
+            ejecutando = false;
+            console.log(`*** FALLA: velocidad fuera de la banda de error (${bandaDeErrorRPM} RPM) ***`);
+            actualizarEstadoTexto();
+            document.getElementById("btnIniciar").disabled = true;
+        }
+
+        // ===== Lógica de simulación =====
+        function Simulacion() {
+
+            // Verificación de banda de error -> Falla
+            if (Math.abs(velActualRPM - setpointVelocidadRPM) > bandaDeErrorRPM) {
+                marcarFalla();
+                return;
+            }
+
+            // Aplicar perturbación una sola vez cuando se haya solicitado
+            if (debeAplicarPerturbacion) {
+                velActualRPM -= perturbacionMagnitudRPM;
+                debeAplicarPerturbacion = false;
+                console.log(`--- Perturbación aplicada: ${perturbacionMagnitudRPM} RPM ---`);
+            }
+
+            const tiempoAnt = tiempo;
+            tiempo = Date.now();
+            const deltaTiempoSeg = (tiempo - tiempoAnt) / 1000.0;
+            tiempoSimSeg += deltaTiempoSeg;
+
+            // Leer KP, KI, KD en cada paso (permite cambiarlos en caliente)
+            const { KP: kpCurrent, KI: kiCurrent, KD: kdCurrent } = leerGananciasPID();
+
+            const señalErrorAnterior = señalError;
+            señalError = setpointVelocidadRPM - velActualRPM;
+
+            let señalControlProporcional = kpCurrent * señalError;
+            let señalControlIntegral = kiCurrent * señalError * deltaTiempoSeg;
+            let señalControlDerivativa = kdCurrent * ((señalError - señalErrorAnterior) / deltaTiempoSeg);
+
+            let señalIntermedioControlador = señalControlProporcional + señalControlIntegral + señalControlDerivativa;
+
+            señalControlFinal = Math.max(-10, Math.min(10, señalIntermedioControlador));
+
+            señalActuador = 60 + señalControlFinal;
+
+            let cambioVelocidadRPM = (señalActuador - 60) * velCambioRpm * deltaTiempoSeg;
+
+            velActualRPM += cambioVelocidadRPM;
+
+            // Guardar en historial
+            datos.push({
+                t: tiempoSimSeg,
+                vel: velActualRPM,
+                sp: setpointVelocidadRPM,
+                banda: bandaDeErrorRPM,
+                error: señalError,
+                control: señalControlFinal,
+                actuador: señalActuador
+            });
+            if (datos.length > MAX_DATOS) {
+                datos.shift();
+            }
+
+            actualizarIndicadores();
+            dibujarGraficos();
+        }
+
+        // ===== Dibujado de gráficos =====
+        function dibujarGraficoVelocidad() {
+            const canvas = document.getElementById("velCanvas");
+            const ctx = canvas.getContext("2d");
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = "#fff";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            if (datos.length < 2) {
+                ctx.fillStyle = "#666";
+                ctx.font = "14px sans-serif";
+                ctx.fillText("Aún no hay datos. Inicia la simulación.", 10, 20);
+                return;
+            }
+
+            const padding = 40;
+            const tMin = datos[0].t;
+            const tMax = datos[datos.length - 1].t;
+            const rangoT = (tMax - tMin) || 1;
+
+            let vMin = Number.POSITIVE_INFINITY;
+            let vMax = Number.NEGATIVE_INFINITY;
+            datos.forEach(d => {
+                if (d.vel < vMin) vMin = d.vel;
+                if (d.vel > vMax) vMax = d.vel;
+            });
+
+            const sp = setpointVelocidadRPM;
+            const banda = bandaDeErrorRPM;
+            vMin = Math.min(vMin, sp - banda - 50);
+            vMax = Math.max(vMax, sp + banda + 50);
+            if (vMin === vMax) {
+                vMin -= 10;
+                vMax += 10;
+            }
+
+            function x(t) {
+                return padding + ((t - tMin) / rangoT) * (canvas.width - 2 * padding);
+            }
+
+            function y(v) {
+                return canvas.height - padding - ((v - vMin) / (vMax - vMin)) * (canvas.height - 2 * padding);
+            }
+
+            // Grid y etiquetas Y
+            const numYTicks = 5;
+            ctx.font = "10px sans-serif";
+            ctx.fillStyle = "#000";
+            ctx.textAlign = "right";
+            ctx.textBaseline = "middle";
+            for (let i = 0; i <= numYTicks; i++) {
+                const val = vMin + (i * (vMax - vMin)) / numYTicks;
+                const yy = y(val);
+                ctx.strokeStyle = "#eee";
+                ctx.beginPath();
+                ctx.moveTo(padding, yy);
+                ctx.lineTo(canvas.width - padding, yy);
+                ctx.stroke();
+                ctx.fillText(val.toFixed(0), padding - 5, yy);
+            }
+
+            // Grid y etiquetas X (tiempo)
+            const numXTicks = 5;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "top";
+            for (let i = 0; i <= numXTicks; i++) {
+                const valT = tMin + (i * rangoT) / numXTicks;
+                const xx = x(valT);
+                const yAxis = canvas.height - padding;
+                ctx.strokeStyle = "#ddd";
+                ctx.beginPath();
+                ctx.moveTo(xx, yAxis);
+                ctx.lineTo(xx, yAxis + 4);
+                ctx.stroke();
+                ctx.fillText(valT.toFixed(1), xx, yAxis + 4);
+            }
+
+            // Banda de error (rectángulo)
+            ctx.fillStyle = "rgba(255, 0, 0, 0.08)";
+            const yTop = y(sp + banda);
+            const yBottom = y(sp - banda);
+            ctx.fillRect(padding, yTop, canvas.width - 2 * padding, yBottom - yTop);
+
+            // Línea de setpoint
+            ctx.strokeStyle = "#888";
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(padding, y(sp));
+            ctx.lineTo(canvas.width - padding, y(sp));
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Eje X
+            ctx.strokeStyle = "#ccc";
+            ctx.beginPath();
+            ctx.moveTo(padding, canvas.height - padding);
+            ctx.lineTo(canvas.width - padding, canvas.height - padding);
+            ctx.stroke();
+
+            // Curva de velocidad
+            ctx.strokeStyle = fallo ? "red" : "blue";
+            ctx.beginPath();
+            datos.forEach((d, idx) => {
+                const px = x(d.t);
+                const py = y(d.vel);
+                if (idx === 0) ctx.moveTo(px, py);
+                else ctx.lineTo(px, py);
+            });
+            ctx.stroke();
+
+            // Texto eje Y
+            ctx.fillStyle = "#000";
+            ctx.font = "11px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText("RPM", 25, padding - 10);
+        }
+
+        // Gráfico genérico con opciones para centrar en 0 o fijar rango
+        function dibujarGraficoSimple(canvasId, getter, etiquetaY, opciones) {
+            opciones = opciones || {};
+            const centerZero = !!opciones.centerZero;
+            const fixedMin = opciones.min;
+            const fixedMax = opciones.max;
+
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext("2d");
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = "#fff";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            if (datos.length < 2) {
+                ctx.fillStyle = "#666";
+                ctx.font = "12px sans-serif";
+                ctx.fillText("Sin datos", 10, 20);
+                return;
+            }
+
+            const padding = 30;
+            const tMin = datos[0].t;
+            const tMax = datos[datos.length - 1].t;
+            const rangoT = (tMax - tMin) || 1;
+
+            let vMin = Number.POSITIVE_INFINITY;
+            let vMax = Number.NEGATIVE_INFINITY;
+            datos.forEach(d => {
+                const v = getter(d);
+                if (v < vMin) vMin = v;
+                if (v > vMax) vMax = v;
+            });
+
+            // Ajuste de rango según opciones
+            if (fixedMin !== undefined && fixedMax !== undefined) {
+                vMin = fixedMin;
+                vMax = fixedMax;
+            } else if (centerZero) {
+                let absMax = Math.max(Math.abs(vMin), Math.abs(vMax));
+                if (absMax === 0) absMax = 1;
+                vMin = -absMax;
+                vMax = absMax;
+            } else {
+                if (vMin === vMax) {
+                    vMin -= 1;
+                    vMax += 1;
+                }
+            }
+
+            function x(t) {
+                return padding + ((t - tMin) / rangoT) * (canvas.width - 2 * padding);
+            }
+
+            function y(v) {
+                return canvas.height - padding - ((v - vMin) / (vMax - vMin)) * (canvas.height - 2 * padding);
+            }
+
+            // Grid y etiquetas Y
+            const numYTicks = 4;
+            ctx.font = "9px sans-serif";
+            ctx.fillStyle = "#000";
+            ctx.textAlign = "right";
+            ctx.textBaseline = "middle";
+            for (let i = 0; i <= numYTicks; i++) {
+                const val = vMin + (i * (vMax - vMin)) / numYTicks;
+                const yy = y(val);
+                ctx.strokeStyle = "#eee";
+                ctx.beginPath();
+                ctx.moveTo(padding, yy);
+                ctx.lineTo(canvas.width - padding, yy);
+                ctx.stroke();
+                ctx.fillText(val.toFixed(1), padding - 4, yy);
+            }
+
+            // Eje horizontal en 0 si el rango lo incluye
+            if (vMin < 0 && vMax > 0) {
+                const y0 = y(0);
+                ctx.strokeStyle = "#000";
+                ctx.beginPath();
+                ctx.moveTo(padding, y0);
+                ctx.lineTo(canvas.width - padding, y0);
+                ctx.stroke();
+            }
+
+            // Eje X + etiquetas de tiempo
+            ctx.strokeStyle = "#ccc";
+            const yAxis = canvas.height - padding;
+            ctx.beginPath();
+            ctx.moveTo(padding, yAxis);
+            ctx.lineTo(canvas.width - padding, yAxis);
+            ctx.stroke();
+
+            const numXTicks = 3;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "top";
+            for (let i = 0; i <= numXTicks; i++) {
+                const valT = tMin + (i * rangoT) / numXTicks;
+                const xx = x(valT);
+                ctx.strokeStyle = "#ddd";
+                ctx.beginPath();
+                ctx.moveTo(xx, yAxis);
+                ctx.lineTo(xx, yAxis + 3);
+                ctx.stroke();
+                ctx.fillText(valT.toFixed(1), xx, yAxis + 3);
+            }
+
+            // Curva
+            ctx.strokeStyle = "#007bff";
+            ctx.beginPath();
+            datos.forEach((d, idx) => {
+                const px = x(d.t);
+                const py = y(getter(d));
+                if (idx === 0) ctx.moveTo(px, py);
+                else ctx.lineTo(px, py);
+            });
+            ctx.stroke();
+
+            // Etiqueta eje Y (texto)
+            ctx.fillStyle = "#000";
+            ctx.font = "10px sans-serif";
+            ctx.textAlign = "left";
+            ctx.textBaseline = "top";
+            ctx.fillText(etiquetaY, 5, 5);
+        }
+
+        function dibujarGraficos() {
+            dibujarGraficoVelocidad();
+            // Error centrado en 0
+            dibujarGraficoSimple("errorCanvas", d => d.error, "Error [RPM]", {
+                centerZero: true
+            });
+            // Control de -10 a 10, centrado en 0
+            dibujarGraficoSimple("controlCanvas", d => d.control, "u(t) [V]", {
+                centerZero: true,
+                min: -10,
+                max: 10
+            });
+            // Actuador con escala libre
+            dibujarGraficoSimple("actuadorCanvas", d => d.actuador, "Frecuencia [Hz]", {});
+        }
+
+        // ===== Control de botones =====
+        function iniciarSimulacion() {
+            if (fallo) return;
+            if (ejecutando) return;
+            leerInputsParametros();
+            tiempo = Date.now(); // para que el primer delta no sea enorme
+            ejecutando = true;
+            if (timerId === null) {
+                timerId = setInterval(Simulacion, 100);
+            }
+            actualizarEstadoTexto();
+        }
+
+        function pausarSimulacion() {
+            if (!ejecutando) return;
+            if (timerId !== null) {
+                clearInterval(timerId);
+                timerId = null;
+            }
+            ejecutando = false;
+            actualizarEstadoTexto();
+        }
+
+        function reiniciarSimulacion() {
+            if (timerId !== null) {
+                clearInterval(timerId);
+                timerId = null;
+            }
+            leerInputsParametros();
+            velActualRPM = velInicialRPM;
+            tiempo = Date.now();
+            tiempoSimSeg = 0;
+            señalError = setpointVelocidadRPM - velActualRPM;
+            señalControlFinal = 0;
+            señalActuador = 60;
+            debeAplicarPerturbacion = false;
+            datos.length = 0;
+            fallo = false;
+            ejecutando = false;
+
+            document.getElementById("btnIniciar").disabled = false;
+
+            actualizarEstadoTexto();
+            actualizarIndicadores();
+            dibujarGraficos();
+        }
+
+        // ===== Inicialización =====
+        window.addEventListener("load", function () {
+            document.getElementById("btnIniciar").addEventListener("click", iniciarSimulacion);
+            document.getElementById("btnPausar").addEventListener("click", pausarSimulacion);
+            document.getElementById("btnReiniciar").addEventListener("click", reiniciarSimulacion);
+
+            document.getElementById("btnPerturbacion").addEventListener("click", function () {
+                const inp = document.getElementById("inputPerturbacion");
+                let amp = parseFloat(inp.value);
+                if (!isFinite(amp)) amp = 50;
+                perturbacionMagnitudRPM = amp;
+                debeAplicarPerturbacion = true;
+            });
+
+            reiniciarSimulacion(); // deja todo limpio y gráficos vacíos
+        });
+    </script>
+</body>
+
+</html>
