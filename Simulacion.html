@@ -131,7 +131,7 @@
                 <button id="btnReiniciar">Reiniciar</button>
                 <br>
                 <label style="display:inline-block; margin-right: 8px;">
-                    Perturbación [RPM]:
+                    Perturbación [N]:
                     <input id="inputPerturbacion" type="number" value="50" style="width:80px;">
                 </label>
                 <br>
@@ -147,7 +147,7 @@
                 <h2>Valores instantáneos</h2>
                 <ul>
                     <li>Velocidad actual: <strong><span id="valVelActual">0</span></strong> RPM</li>
-                    <li>Error: <strong><span id="valError">0</span></strong> RPM</li>
+                    <li>Error: <strong><span id="valError">0</span></strong> N</li>
                     <li>Señal de control: <strong><span id="valControl">0</span></strong> V</li>
                     <li>Señal actuador: <strong><span id="valActuador">60</span></strong> Hz</li>
                     <li>Perturbación activa: <strong><span id="valPerturbacionActiva">No</span></strong></li>
@@ -167,19 +167,19 @@
                 <h2>Señales internas</h2>
                 <div class="fila-charts">
                     <div>
-                        <h3>e(t): señalError [RPM]</h3>
+                        <h3>e(t): Señal de Error [RPM]</h3>
                         <canvas id="errorCanvas" width="260" height="140"></canvas>
                     </div>
                     <div>
-                        <h3>señalControlFinal [V]</h3>
+                        <h3>Señal de Control [V]</h3>
                         <canvas id="controlCanvas" width="260" height="140"></canvas>
                     </div>
                     <div>
-                        <h3>señalActuador [Hz]</h3>
+                        <h3>Señal de Actuador [Hz]</h3>
                         <canvas id="actuadorCanvas" width="260" height="140"></canvas>
                     </div>
                     <div>
-                        <h3>Perturbación [RPM]</h3>
+                        <h3>Perturbación [N]</h3>
                         <canvas id="perturbacionCanvas" width="260" height="140"></canvas>
                     </div>
                 </div>
