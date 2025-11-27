@@ -130,10 +130,16 @@
                 <button id="btnPausar">Pausar</button>
                 <button id="btnReiniciar">Reiniciar</button>
                 <br>
-                <label>
+                <label style="display:inline-block; margin-right: 8px;">
                     Perturbación [RPM]:
-                    <input id="inputPerturbacion" type="number" value="50">
+                    <input id="inputPerturbacion" type="number" value="50" style="width:80px;">
                 </label>
+                <br>
+                <label style="display:inline-block; margin-right: 8px;">
+                    Duración [s]:
+                    <input id="inputPerturbacionDuracion" type="number" step="0.1" min="0" value="2" style="width:70px;">
+                </label>
+                <br>
                 <button id="btnPerturbacion">Aplicar perturbación una vez</button>
             </section>
 
@@ -144,6 +150,8 @@
                     <li>Error: <strong><span id="valError">0</span></strong> RPM</li>
                     <li>Señal de control: <strong><span id="valControl">0</span></strong> V</li>
                     <li>Señal actuador: <strong><span id="valActuador">60</span></strong> Hz</li>
+                    <li>Perturbación activa: <strong><span id="valPerturbacionActiva">No</span></strong></li>
+                    <li>Tiempo restante perturbación: <strong><span id="valPerturbacionTiempo">0</span></strong> s</li>
                 </ul>
             </section>
         </div>
@@ -170,6 +178,10 @@
                         <h3>señalActuador [Hz]</h3>
                         <canvas id="actuadorCanvas" width="260" height="140"></canvas>
                     </div>
+                    <div>
+                        <h3>Perturbación [RPM]</h3>
+                        <canvas id="perturbacionCanvas" width="260" height="140"></canvas>
+                    </div>
                 </div>
             </section>
         </div>
@@ -195,7 +207,11 @@
         const velCambioRpm = 10;
 
         let perturbacionMagnitudRPM = 50;
+        let perturbacionAplicadaMagnitud = 0; // magnitud efectiva aplicada durante la perturbación activa
+        let perturbacionDuracionSeg = 2;        // duración por defecto de la perturbación (segundos)
         let debeAplicarPerturbacion = false;
+        let perturbacionActiva = false;        // true mientras la perturbación esté aplicada
+        let perturbacionTiempoRestante = 0;    // tiempo restante de perturbación (segundos)
 
         let señalControlFinal = 0;
         let señalActuador = 60;
@@ -254,6 +270,8 @@
             document.getElementById("valError").textContent = señalError.toFixed(2);
             document.getElementById("valControl").textContent = señalControlFinal.toFixed(2);
             document.getElementById("valActuador").textContent = señalActuador.toFixed(2);
+            document.getElementById("valPerturbacionActiva").textContent = perturbacionActiva ? "Sí" : "No";
+            document.getElementById("valPerturbacionTiempo").textContent = perturbacionTiempoRestante.toFixed(1);
         }
 
         function actualizarEstadoTexto() {
@@ -294,11 +312,20 @@
                 return;
             }
 
-            // Aplicar perturbación una sola vez cuando se haya solicitado
+            // Aplicar perturbación cuando se haya solicitado y manejar su duración
             if (debeAplicarPerturbacion) {
-                velActualRPM -= perturbacionMagnitudRPM;
+                // Si ya hay una perturbación activa, ignoramos la nueva solicitud
+                if (!perturbacionActiva) {
+                    // restamos la magnitud una sola vez (perturbación tipo paso)
+                    perturbacionAplicadaMagnitud = perturbacionMagnitudRPM;
+                    velActualRPM -= perturbacionAplicadaMagnitud;
+                    perturbacionActiva = true;
+                    perturbacionTiempoRestante = perturbacionDuracionSeg;
+                    console.log(`--- Perturbación aplicada: ${perturbacionAplicadaMagnitud} RPM por ${perturbacionDuracionSeg} s ---`);
+                } else {
+                    console.log(`--- Solicitud de perturbación ignorada: ya hay una activa ---`);
+                }
                 debeAplicarPerturbacion = false;
-                console.log(`--- Perturbación aplicada: ${perturbacionMagnitudRPM} RPM ---`);
             }
 
             const tiempoAnt = tiempo;
@@ -326,6 +353,18 @@
 
             velActualRPM += cambioVelocidadRPM;
 
+            // Si hay perturbación activa, reducir el tiempo restante y finalizar si corresponde
+            if (perturbacionActiva) {
+                perturbacionTiempoRestante -= deltaTiempoSeg;
+                if (perturbacionTiempoRestante <= 0) {
+                    // terminada la perturbación: la reponemos (restauramos la diferencia)
+                    velActualRPM += perturbacionAplicadaMagnitud;
+                    perturbacionActiva = false;
+                    perturbacionTiempoRestante = 0;
+                    console.log(`--- Perturbación finalizada: recuperados ${perturbacionAplicadaMagnitud} RPM ---`);
+                }
+            }
+
             // Guardar en historial
             datos.push({
                 t: tiempoSimSeg,
@@ -335,6 +374,7 @@
                 error: señalError,
                 control: señalControlFinal,
                 actuador: señalActuador
+                ,perturbacion: perturbacionActiva ? -perturbacionMagnitudRPM : 0
             });
             if (datos.length > MAX_DATOS) {
                 datos.shift();
@@ -468,6 +508,7 @@
             const centerZero = !!opciones.centerZero;
             const fixedMin = opciones.min;
             const fixedMax = opciones.max;
+            const strokeColor = opciones.color || "#007bff";
 
             const canvas = document.getElementById(canvasId);
             const ctx = canvas.getContext("2d");
@@ -570,7 +611,7 @@
             }
 
             // Curva
-            ctx.strokeStyle = "#007bff";
+            ctx.strokeStyle = strokeColor;
             ctx.beginPath();
             datos.forEach((d, idx) => {
                 const px = x(d.t);
@@ -602,6 +643,10 @@
             });
             // Actuador con escala libre
             dibujarGraficoSimple("actuadorCanvas", d => d.actuador, "Frecuencia [Hz]", {});
+            // Perturbación
+            dibujarGraficoSimple("perturbacionCanvas", d => d.perturbacion, "Perturbación [RPM]", {
+                color: "#d9534f"
+            });
         }
 
         // ===== Control de botones =====
@@ -640,6 +685,11 @@
             señalControlFinal = 0;
             señalActuador = 60;
             debeAplicarPerturbacion = false;
+            perturbacionActiva = false;
+            perturbacionTiempoRestante = 0;
+            perturbacionAplicadaMagnitud = 0;
+            perturbacionActiva = false;
+            perturbacionTiempoRestante = 0;
             datos.length = 0;
             fallo = false;
             ejecutando = false;
@@ -659,9 +709,13 @@
 
             document.getElementById("btnPerturbacion").addEventListener("click", function () {
                 const inp = document.getElementById("inputPerturbacion");
+                const durInp = document.getElementById("inputPerturbacionDuracion");
                 let amp = parseFloat(inp.value);
+                let dur = parseFloat(durInp.value);
                 if (!isFinite(amp)) amp = 50;
+                if (!isFinite(dur) || dur < 0) dur = 2;
                 perturbacionMagnitudRPM = amp;
+                perturbacionDuracionSeg = dur;
                 debeAplicarPerturbacion = true;
             });
 
