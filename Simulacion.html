@@ -99,7 +99,7 @@
                 </label>
                 <label>
                     Velocidad inicial [RPM]:
-                    <input id="inputVelInicial" type="number" value="1600">
+                    <input id="inputVelInicial" type="number" value="0">
                 </label>
                 <label>
                     Banda de error ± [RPM]:
@@ -111,7 +111,7 @@
                 <h2>Ganancias PID</h2>
                 <label>
                     KP:
-                    <input id="kpInput" type="number" step="0.01" value="0.10">
+                    <input id="kpInput" type="number" step="0.01" value="0.20">
                 </label>
                 <label>
                     KI:
@@ -129,29 +129,26 @@
                 <button id="btnIniciar">Iniciar</button>
                 <button id="btnPausar">Pausar</button>
                 <button id="btnReiniciar">Reiniciar</button>
-                <br>
-                <label style="display:inline-block; margin-right: 8px;">
-                    Perturbación [N]:
-                    <input id="inputPerturbacion" type="number" value="50" style="width:80px;">
+
+                <h3>Perturbación (resistencia mecánica)</h3>
+                <label>
+                    Magnitud perturbación [N] (resistencia mecanica):
+                    <input id="inputPertMagN" type="number" step="0.1" value="30">
                 </label>
-                <br>
-                <label style="display:inline-block; margin-right: 8px;">
-                    Duración [s]:
-                    <input id="inputPerturbacionDuracion" type="number" step="0.1" min="0" value="2" style="width:70px;">
+                <label>
+                    Δt perturbación [s]:
+                    <input id="inputPertDt" type="number" step="0.1" value="4">
                 </label>
-                <br>
-                <button id="btnPerturbacion">Aplicar perturbación una vez</button>
+                <button id="btnPertAplicar">Aplicar perturbación</button>
             </section>
 
             <section>
                 <h2>Valores instantáneos</h2>
                 <ul>
                     <li>Velocidad actual: <strong><span id="valVelActual">0</span></strong> RPM</li>
-                    <li>Error: <strong><span id="valError">0</span></strong> Hz</li>
-                    <li>Señal de control: <strong><span id="valControl">0</span></strong> V</li>
-                    <li>Señal actuador: <strong><span id="valActuador">60</span></strong> Hz</li>
-                    <li>Perturbación activa: <strong><span id="valPerturbacionActiva">No</span></strong></li>
-                    <li>Tiempo restante perturbación: <strong><span id="valPerturbacionTiempo">0</span></strong> s</li>
+                    <li>Error: <strong><span id="valError">0</span></strong> RPM</li>
+                    <li>Señal intermedia controlador: <strong><span id="valControl">0</span></strong> V</li>
+                    <li>Señal controlador: <strong><span id="valActuador">60</span></strong> Hz</li>
                 </ul>
             </section>
         </div>
@@ -167,20 +164,24 @@
                 <h2>Señales internas</h2>
                 <div class="fila-charts">
                     <div>
-                        <h3>e(t): Señal de Error [Hz]</h3>
+                        <h3>e(t): señalError [RPM]</h3>
                         <canvas id="errorCanvas" width="260" height="140"></canvas>
                     </div>
                     <div>
-                        <h3>Señal de Control [V]</h3>
-                        <canvas id="controlCanvas" width="260" height="140"></canvas>
-                    </div>
-                    <div>
-                        <h3>Señal de Actuador [Hz]</h3>
+                        <h3>salida controlador</h3>
                         <canvas id="actuadorCanvas" width="260" height="140"></canvas>
                     </div>
                     <div>
-                        <h3>Perturbación [N]</h3>
-                        <canvas id="perturbacionCanvas" width="260" height="140"></canvas>
+                        <h3>f(t): valor medido</h3>
+                        <canvas id="fCanvas" width="260" height="140"></canvas>
+                    </div>
+                    <div>
+                        <h3>θᵢ(t)</h3>
+                        <canvas id="titaCanvas" width="260" height="140"></canvas>
+                    </div>
+                    <div>
+                        <h3>Perturbación</h3>
+                        <canvas id="pertCanvas" width="260" height="140"></canvas>
                     </div>
                 </div>
             </section>
@@ -199,19 +200,22 @@
         let señalError = 0;
 
         // Valores por defecto (también están en los inputs)
-        let KP = 0.1;
+        let KP = 0.2;
         let KI = 0.5;
         let KD = 0.05;
 
         let velActualRPM = velInicialRPM;
         const velCambioRpm = 10;
 
-        let perturbacionMagnitudRPM = 50;
-        let perturbacionAplicadaMagnitud = 0; // magnitud efectiva aplicada durante la perturbación activa
-        let perturbacionDuracionSeg = 2;        // duración por defecto de la perturbación (segundos)
-        let debeAplicarPerturbacion = false;
-        let perturbacionActiva = false;        // true mientras la perturbación esté aplicada
-        let perturbacionTiempoRestante = 0;    // tiempo restante de perturbación (segundos)
+        // Ventana de tiempo fija para los gráficos [s]
+        const VENTANA_TIEMPO_SEG = 10;
+
+        // Perturbación única (resistencia mecánica)
+        // magnitud en N -> por cada N se restan 2 RPM/s (si N > 0)
+        let deltaTiempoSeg = 0;
+        let pertTiempoRestante = 0;
+        let pertDeltaRpmPorSegundo = 0; // RPM/s (negativo cuando es resistencia, positivo cuando ayuda)
+        let perturbacionActual = 0;      // valor instantáneo de la perturbación (RPM/s)
 
         let señalControlFinal = 0;
         let señalActuador = 60;
@@ -219,6 +223,7 @@
         let timerId = null;
         let ejecutando = false;
         let fallo = false;
+        let falloArmado = false; // se activa una vez que entra en banda
 
         const datos = [];         // historial de muestras
         const MAX_DATOS = 300;    // máximo de puntos a guardar
@@ -238,7 +243,7 @@
 
             setpointVelocidadRPM = sp;
             velInicialRPM = vi;
-            bandaDeErrorRPM = Math.abs(banda);
+            bandaDeErrorRPM = Math.abs(banda); // banda siempre positiva
 
             spInput.value = setpointVelocidadRPM;
             viInput.value = velInicialRPM;
@@ -270,8 +275,6 @@
             document.getElementById("valError").textContent = señalError.toFixed(2);
             document.getElementById("valControl").textContent = señalControlFinal.toFixed(2);
             document.getElementById("valActuador").textContent = señalActuador.toFixed(2);
-            document.getElementById("valPerturbacionActiva").textContent = perturbacionActiva ? "Sí" : "No";
-            document.getElementById("valPerturbacionTiempo").textContent = perturbacionTiempoRestante.toFixed(1);
         }
 
         function actualizarEstadoTexto() {
@@ -303,35 +306,42 @@
             document.getElementById("btnIniciar").disabled = true;
         }
 
+        // Aplica la perturbación activa en este paso
+        function aplicarPerturbaciones(dt) {
+            // Reiniciar perturbación instantánea (tasa equivalente)
+            perturbacionActual = 0;
+
+            if (pertTiempoRestante > 0) {
+                const dtAplicado = Math.min(dt, pertTiempoRestante);
+                velActualRPM += pertDeltaRpmPorSegundo * dtAplicado;
+                pertTiempoRestante = Math.max(0, pertTiempoRestante - dtAplicado);
+                perturbacionActual = pertDeltaRpmPorSegundo; // RPM/s
+            }
+        }
+
         // ===== Lógica de simulación =====
         function Simulacion() {
+            // Calcular delta de tiempo
+            const tiempoAnt = tiempo;
+            tiempo = Date.now();
+            deltaTiempoSeg = (tiempo - tiempoAnt) / 1000.0;
+            tiempoSimSeg += deltaTiempoSeg;
 
-            // Verificación de banda de error -> Falla
-            if (Math.abs(velActualRPM - setpointVelocidadRPM) > bandaDeErrorRPM) {
+            // Verificación de banda de error con "armado" de falla
+            const errorAbs = Math.abs(velActualRPM - setpointVelocidadRPM);
+
+            // 1) Si todavía no estaba armado y entra por primera vez en la banda, armamos la falla
+            if (!falloArmado && errorAbs <= bandaDeErrorRPM) {
+                falloArmado = true;
+            }
+            // 2) Si ya está armado y sale de la banda, se dispara la falla
+            else if (falloArmado && errorAbs > bandaDeErrorRPM) {
                 marcarFalla();
                 return;
             }
 
-            // Aplicar perturbación cuando se haya solicitado y manejar su duración
-            if (debeAplicarPerturbacion) {
-                // Si ya hay una perturbación activa, ignoramos la nueva solicitud
-                if (!perturbacionActiva) {
-                    // restamos la magnitud una sola vez (perturbación tipo paso)
-                    perturbacionAplicadaMagnitud = perturbacionMagnitudRPM;
-                    velActualRPM -= perturbacionAplicadaMagnitud;
-                    perturbacionActiva = true;
-                    perturbacionTiempoRestante = perturbacionDuracionSeg;
-                    console.log(`--- Perturbación aplicada: ${perturbacionAplicadaMagnitud} RPM por ${perturbacionDuracionSeg} s ---`);
-                } else {
-                    console.log(`--- Solicitud de perturbación ignorada: ya hay una activa ---`);
-                }
-                debeAplicarPerturbacion = false;
-            }
-
-            const tiempoAnt = tiempo;
-            tiempo = Date.now();
-            const deltaTiempoSeg = (tiempo - tiempoAnt) / 1000.0;
-            tiempoSimSeg += deltaTiempoSeg;
+            // Aplicar perturbación distribuida en el tiempo
+            aplicarPerturbaciones(deltaTiempoSeg);
 
             // Leer KP, KI, KD en cada paso (permite cambiarlos en caliente)
             const { KP: kpCurrent, KI: kiCurrent, KD: kdCurrent } = leerGananciasPID();
@@ -353,18 +363,6 @@
 
             velActualRPM += cambioVelocidadRPM;
 
-            // Si hay perturbación activa, reducir el tiempo restante y finalizar si corresponde
-            if (perturbacionActiva) {
-                perturbacionTiempoRestante -= deltaTiempoSeg;
-                if (perturbacionTiempoRestante <= 0) {
-                    // terminada la perturbación: la reponemos (restauramos la diferencia)
-                    velActualRPM += perturbacionAplicadaMagnitud;
-                    perturbacionActiva = false;
-                    perturbacionTiempoRestante = 0;
-                    console.log(`--- Perturbación finalizada: recuperados ${perturbacionAplicadaMagnitud} RPM ---`);
-                }
-            }
-
             // Guardar en historial
             datos.push({
                 t: tiempoSimSeg,
@@ -373,8 +371,9 @@
                 banda: bandaDeErrorRPM,
                 error: señalError,
                 control: señalControlFinal,
-                actuador: señalActuador
-                ,perturbacion: perturbacionActiva ? -perturbacionMagnitudRPM : 0
+                actuador: señalActuador,
+                f: velActualRPM,
+                perturbacion: perturbacionActual
             });
             if (datos.length > MAX_DATOS) {
                 datos.shift();
@@ -393,7 +392,7 @@
             ctx.fillStyle = "#fff";
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            if (datos.length < 2) {
+            if (datos.length < 1) {
                 ctx.fillStyle = "#666";
                 ctx.font = "14px sans-serif";
                 ctx.fillText("Aún no hay datos. Inicia la simulación.", 10, 20);
@@ -401,24 +400,43 @@
             }
 
             const padding = 40;
-            const tMin = datos[0].t;
-            const tMax = datos[datos.length - 1].t;
-            const rangoT = (tMax - tMin) || 1;
 
-            let vMin = Number.POSITIVE_INFINITY;
-            let vMax = Number.NEGATIVE_INFINITY;
-            datos.forEach(d => {
-                if (d.vel < vMin) vMin = d.vel;
-                if (d.vel > vMax) vMax = d.vel;
+            // Ventana fija de tiempo
+            const tMax = datos[datos.length - 1].t;
+            const tMin = Math.max(0, tMax - VENTANA_TIEMPO_SEG);
+            const rangoT = VENTANA_TIEMPO_SEG;
+
+            // Datos dentro de la ventana
+            const windowData = datos.filter(d => d.t >= tMin);
+
+            if (windowData.length === 0) {
+                return;
+            }
+
+            let vMinRaw = Number.POSITIVE_INFINITY;
+            let vMaxRaw = Number.NEGATIVE_INFINITY;
+            windowData.forEach(d => {
+                if (d.vel < vMinRaw) vMinRaw = d.vel;
+                if (d.vel > vMaxRaw) vMaxRaw = d.vel;
             });
 
             const sp = setpointVelocidadRPM;
             const banda = bandaDeErrorRPM;
-            vMin = Math.min(vMin, sp - banda - 50);
-            vMax = Math.max(vMax, sp + banda + 50);
+
+            vMinRaw = Math.min(vMinRaw, sp - banda - 50);
+            vMaxRaw = Math.max(vMaxRaw, sp + banda + 50);
+            if (vMinRaw === vMaxRaw) {
+                vMinRaw -= 10;
+                vMaxRaw += 10;
+            }
+
+            // Ajuste a múltiplos de 100 RPM
+            const pasoY = 100;
+            let vMin = Math.floor(vMinRaw / pasoY) * pasoY;
+            let vMax = Math.ceil(vMaxRaw / pasoY) * pasoY;
             if (vMin === vMax) {
-                vMin -= 10;
-                vMax += 10;
+                vMin -= pasoY;
+                vMax += pasoY;
             }
 
             function x(t) {
@@ -429,14 +447,13 @@
                 return canvas.height - padding - ((v - vMin) / (vMax - vMin)) * (canvas.height - 2 * padding);
             }
 
-            // Grid y etiquetas Y
-            const numYTicks = 5;
+            // Grid y etiquetas Y cada 100 RPM
             ctx.font = "10px sans-serif";
             ctx.fillStyle = "#000";
             ctx.textAlign = "right";
             ctx.textBaseline = "middle";
-            for (let i = 0; i <= numYTicks; i++) {
-                const val = vMin + (i * (vMax - vMin)) / numYTicks;
+
+            for (let val = vMin; val <= vMax; val += pasoY) {
                 const yy = y(val);
                 ctx.strokeStyle = "#eee";
                 ctx.beginPath();
@@ -468,7 +485,7 @@
             const yBottom = y(sp - banda);
             ctx.fillRect(padding, yTop, canvas.width - 2 * padding, yBottom - yTop);
 
-            // Línea de setpoint
+            // Línea de setpoint (θᵢ)
             ctx.strokeStyle = "#888";
             ctx.setLineDash([5, 5]);
             ctx.beginPath();
@@ -484,10 +501,10 @@
             ctx.lineTo(canvas.width - padding, canvas.height - padding);
             ctx.stroke();
 
-            // Curva de velocidad
+            // Curva de velocidad (solo datos en la ventana)
             ctx.strokeStyle = fallo ? "red" : "blue";
             ctx.beginPath();
-            datos.forEach((d, idx) => {
+            windowData.forEach((d, idx) => {
                 const px = x(d.t);
                 const py = y(d.vel);
                 if (idx === 0) ctx.moveTo(px, py);
@@ -495,11 +512,11 @@
             });
             ctx.stroke();
 
-            // Texto eje Y
+            // Texto eje Y: θᵢ [RPM]
             ctx.fillStyle = "#000";
             ctx.font = "11px sans-serif";
             ctx.textAlign = "center";
-            ctx.fillText("RPM", 25, padding - 10);
+            ctx.fillText("[RPM]", 25, padding - 30);
         }
 
         // Gráfico genérico con opciones para centrar en 0 o fijar rango
@@ -508,7 +525,6 @@
             const centerZero = !!opciones.centerZero;
             const fixedMin = opciones.min;
             const fixedMax = opciones.max;
-            const strokeColor = opciones.color || "#007bff";
 
             const canvas = document.getElementById(canvasId);
             const ctx = canvas.getContext("2d");
@@ -517,7 +533,7 @@
             ctx.fillStyle = "#fff";
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            if (datos.length < 2) {
+            if (datos.length < 1) {
                 ctx.fillStyle = "#666";
                 ctx.font = "12px sans-serif";
                 ctx.fillText("Sin datos", 10, 20);
@@ -525,13 +541,20 @@
             }
 
             const padding = 30;
-            const tMin = datos[0].t;
+
+            // Ventana fija de tiempo
             const tMax = datos[datos.length - 1].t;
-            const rangoT = (tMax - tMin) || 1;
+            const tMin = Math.max(0, tMax - VENTANA_TIEMPO_SEG);
+            const rangoT = VENTANA_TIEMPO_SEG;
+
+            const windowData = datos.filter(d => d.t >= tMin);
+            if (windowData.length === 0) {
+                return;
+            }
 
             let vMin = Number.POSITIVE_INFINITY;
             let vMax = Number.NEGATIVE_INFINITY;
-            datos.forEach(d => {
+            windowData.forEach(d => {
                 const v = getter(d);
                 if (v < vMin) vMin = v;
                 if (v > vMax) vMax = v;
@@ -610,10 +633,10 @@
                 ctx.fillText(valT.toFixed(1), xx, yAxis + 3);
             }
 
-            // Curva
-            ctx.strokeStyle = strokeColor;
+            // Curva (solo datos en la ventana)
+            ctx.strokeStyle = "#007bff";
             ctx.beginPath();
-            datos.forEach((d, idx) => {
+            windowData.forEach((d, idx) => {
                 const px = x(d.t);
                 const py = y(getter(d));
                 if (idx === 0) ctx.moveTo(px, py);
@@ -635,17 +658,15 @@
             dibujarGraficoSimple("errorCanvas", d => d.error, "Error [RPM]", {
                 centerZero: true
             });
-            // Control de -10 a 10, centrado en 0
-            dibujarGraficoSimple("controlCanvas", d => d.control, "u(t) [V]", {
-                centerZero: true,
-                min: -10,
-                max: 10
-            });
-            // Actuador con escala libre
-            dibujarGraficoSimple("actuadorCanvas", d => d.actuador, "Frecuencia [Hz]", {});
-            // Perturbación
-            dibujarGraficoSimple("perturbacionCanvas", d => d.perturbacion, "Perturbación [RPM]", {
-                color: "#d9534f"
+            // Salida controlador (antes señalActuador)
+            dibujarGraficoSimple("actuadorCanvas", d => d.actuador, "Salida controlador [Hz]", {});
+            // f(t): valor medido
+            dibujarGraficoSimple("fCanvas", d => d.f, "f(t) valor medido [RPM]", {});
+            // θᵢ(t): referencia
+            dibujarGraficoSimple("titaCanvas", d => d.sp, "θᵢ(t) [RPM]", {});
+            // Perturbación (RPM/s equivalente)
+            dibujarGraficoSimple("pertCanvas", d => d.perturbacion, "Perturbación [RPM/s]", {
+                centerZero: true
             });
         }
 
@@ -684,14 +705,15 @@
             señalError = setpointVelocidadRPM - velActualRPM;
             señalControlFinal = 0;
             señalActuador = 60;
-            debeAplicarPerturbacion = false;
-            perturbacionActiva = false;
-            perturbacionTiempoRestante = 0;
-            perturbacionAplicadaMagnitud = 0;
-            perturbacionActiva = false;
-            perturbacionTiempoRestante = 0;
+
+            // Reset de perturbación
+            pertTiempoRestante = 0;
+            pertDeltaRpmPorSegundo = 0;
+            perturbacionActual = 0;
+
             datos.length = 0;
             fallo = false;
+            falloArmado = false;   // reset del armado de falla
             ejecutando = false;
 
             document.getElementById("btnIniciar").disabled = false;
@@ -699,6 +721,9 @@
             actualizarEstadoTexto();
             actualizarIndicadores();
             dibujarGraficos();
+
+            // Arrancar automáticamente después de reiniciar
+            iniciarSimulacion();
         }
 
         // ===== Inicialización =====
@@ -707,19 +732,21 @@
             document.getElementById("btnPausar").addEventListener("click", pausarSimulacion);
             document.getElementById("btnReiniciar").addEventListener("click", reiniciarSimulacion);
 
-            document.getElementById("btnPerturbacion").addEventListener("click", function () {
-                const inp = document.getElementById("inputPerturbacion");
-                const durInp = document.getElementById("inputPerturbacionDuracion");
-                let amp = parseFloat(inp.value);
-                let dur = parseFloat(durInp.value);
-                if (!isFinite(amp)) amp = 50;
-                if (!isFinite(dur) || dur < 0) dur = 2;
-                perturbacionMagnitudRPM = amp;
-                perturbacionDuracionSeg = dur;
-                debeAplicarPerturbacion = true;
+            // Perturbación única: magnitud en N, 2 RPM/s por cada N, durante Δt
+            document.getElementById("btnPertAplicar").addEventListener("click", function () {
+                let magN = parseFloat(document.getElementById("inputPertMagN").value);
+                if (!isFinite(magN)) magN = 0;   // dejamos el signo tal cual
+                let dt = parseFloat(document.getElementById("inputPertDt").value);
+                if (!isFinite(dt) || dt <= 0) dt = 1.0;
+
+                // Por cada N => -2 RPM/s
+                // magN > 0 -> resistencia (disminuye RPM)
+                // magN < 0 -> ayuda (aumenta RPM)
+                pertDeltaRpmPorSegundo = -2 * magN;
+                pertTiempoRestante = dt;
             });
 
-            reiniciarSimulacion(); // deja todo limpio y gráficos vacíos
+            reiniciarSimulacion(); // deja todo limpio y arranca la simulación
         });
     </script>
 </body>
