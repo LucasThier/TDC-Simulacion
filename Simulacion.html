@@ -172,11 +172,11 @@
                         <canvas id="actuadorCanvas" width="260" height="140"></canvas>
                     </div>
                     <div>
-                        <h3>f(t): valor medido</h3>
+                        <h3>f(t): valor medido [Hz]</h3>
                         <canvas id="fCanvas" width="260" height="140"></canvas>
                     </div>
                     <div>
-                        <h3>θᵢ(t)</h3>
+                        <h3>θᵢ(t) [Hz]</h3>
                         <canvas id="titaCanvas" width="260" height="140"></canvas>
                     </div>
                     <div>
@@ -190,6 +190,11 @@
 
     <script>
         // ===== Parámetros base =====
+        // ===== Conversión de unidades =====
+        // Según tu consigna: 1 RPM equivale a 500 Hz
+        const RPM_TO_HZ = 500;
+        const rpmToHz = (rpm) => rpm * (RPM_TO_HZ / 60);
+
         let setpointVelocidadRPM = 1600;
         let velInicialRPM = 1600;
         let bandaDeErrorRPM = 200;
@@ -540,7 +545,7 @@
                 return;
             }
 
-            const padding = 30;
+            let padding = 30;
 
             // Ventana fija de tiempo
             const tMax = datos[datos.length - 1].t;
@@ -576,6 +581,27 @@
                 }
             }
 
+
+            // Formato y margen automático para etiquetas del eje Y (evita que se recorten hacia la izquierda)
+            function formatTick(val) {
+                const abs = Math.abs(val);
+                if (abs >= 1000) return val.toLocaleString("es-AR", { maximumFractionDigits: 0 });
+                return val.toLocaleString("es-AR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+            }
+
+            ctx.font = "9px sans-serif";
+            let maxLabelW = 0;
+            const _numYTicks = 4;
+            for (let i = 0; i <= _numYTicks; i++) {
+                const val = vMin + (i * (vMax - vMin)) / _numYTicks;
+                const label = formatTick(val);
+                const w = ctx.measureText(label).width;
+                if (w > maxLabelW) maxLabelW = w;
+            }
+            // padding se usa para ambos lados (izq/der y arriba/abajo). Lo ampliamos lo necesario.
+            padding = Math.max(padding, Math.ceil(maxLabelW) + 14);
+            padding = Math.min(padding, Math.floor(canvas.width * 0.45));
+
             function x(t) {
                 return padding + ((t - tMin) / rangoT) * (canvas.width - 2 * padding);
             }
@@ -598,7 +624,7 @@
                 ctx.moveTo(padding, yy);
                 ctx.lineTo(canvas.width - padding, yy);
                 ctx.stroke();
-                ctx.fillText(val.toFixed(1), padding - 4, yy);
+                ctx.fillText(formatTick(val), padding - 6, yy);
             }
 
             // Eje horizontal en 0 si el rango lo incluye
@@ -661,9 +687,9 @@
             // Salida controlador (antes señalActuador)
             dibujarGraficoSimple("actuadorCanvas", d => d.actuador, "Salida controlador [Hz]", {});
             // f(t): valor medido
-            dibujarGraficoSimple("fCanvas", d => d.f, "f(t) valor medido [RPM]", {});
+            dibujarGraficoSimple("fCanvas", d => rpmToHz(d.f), "f(t) valor medido [Hz]", {});
             // θᵢ(t): referencia
-            dibujarGraficoSimple("titaCanvas", d => d.sp, "θᵢ(t) [RPM]", {});
+            dibujarGraficoSimple("titaCanvas", d => rpmToHz(d.sp), "θᵢ(t) [Hz]", {});
             // Perturbación (RPM/s equivalente)
             dibujarGraficoSimple("pertCanvas", d => d.perturbacion, "Perturbación [RPM/s]", {
                 centerZero: true
